@@ -66,6 +66,21 @@ async function startRoundInDb(
   round: number,
   musics: { id: string; title: string }[],
 ) {
+  if (musics.length === 0) {
+    const key = roomKey(lobbyId);
+    await prisma.lobby.update({
+      where: { id: Number(lobbyId) },
+      data: {
+        phase: "FINISHED",
+        phaseEndsAt: null,
+        roundEndsAt: null,
+        currentMusic: null,
+      },
+    });
+    io.to(key).emit("game-finished", { lobbyId, scores: [] });
+    return;
+  }
+
   const now = new Date();
   const roundEndsAt = new Date(now.getTime() + ROUND_SECONDS * 1000);
   const randomIndex = Math.floor(Math.random() * musics.length);
@@ -304,21 +319,33 @@ io.on("connection", async (socket) => {
         where: { clerkId: userId },
       });
 
+      if (!lobby || lobby.hostId !== userId) return;
+
       const playlist = await getYouTubeVideos({
         access_token: user?.access_token || "",
-        playlistId: lobby?.playlistId || "PLMC9KNkIncKtPzgY-5rmhvj7fax8fdxoj",
+        playlistId: lobby.playlistId || "PLMC9KNkIncKtPzgY-5rmhvj7fax8fdxoj",
       });
 
-      const musics =
-        playlist?.items.map((item: Videos["items"][number]) => ({
-          id: item.contentDetails.videoId,
+      if (!playlist?.items?.length) {
+        console.log("PROBLEM WITH PLAYLIST", "USER ACCESS TOKEN", user?.access_token, "PLAYLIST ID", lobby.playlistId)
+        return;
+      }
+
+      const musics = playlist.items
+        .map((item: Videos["items"][number]) => ({
+          id: item.contentDetails?.videoId,
           title:
-            item.snippet.title + " - " + item.snippet.videoOwnerChannelTitle,
-        })) || [];
+            `${item.snippet?.title ?? ""} - ${item.snippet?.videoOwnerChannelTitle ?? ""}`.trim(),
+        }))
+        .filter(
+          (m): m is { id: string; title: string } =>
+            Boolean(m.id) && Boolean(m.title),
+        );
 
-      if (!lobby || lobby.hostId !== userId || !musics) return;
-
-      console.log(musics);
+      if (musics.length === 0) {
+        console.log("MUSICS LENGTH 0")
+        return;
+      }
 
       io.to(key).emit("start-game");
 
